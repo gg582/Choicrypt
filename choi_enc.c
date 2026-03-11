@@ -20,16 +20,24 @@ int main(int argc, char *argv[]) {
     size_t len = ftell(f);
     rewind(f);
 
-    uint8_t *buf = malloc(len);
+    // Buffer for data + 4 bytes checksum
+    uint8_t *buf = malloc(len + 4);
     fread(buf, 1, len, f);
     fclose(f);
 
-    transform(buf, len, 1);
+    // Calculate and append checksum
+    uint32_t checksum = calculate_checksum(buf, len);
+    buf[len] = (checksum >> 24) & 0xFF;
+    buf[len+1] = (checksum >> 16) & 0xFF;
+    buf[len+2] = (checksum >> 8) & 0xFF;
+    buf[len+3] = checksum & 0xFF;
+
+    transform(buf, len + 4);
 
     char out_name[512];
     snprintf(out_name, sizeof(out_name), "%s.choi", argv[1]);
     FILE *out = fopen(out_name, "wb");
-    fwrite(buf, 1, len, out);
+    fwrite(buf, 1, len + 4, out);
     fclose(out);
 
     free(buf);
