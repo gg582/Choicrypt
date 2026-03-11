@@ -138,76 +138,115 @@ static void generate_key_dep_sbox(const uint8_t *key_hash) {
     }
 }
 
-static inline void sub_bytes(uint8_t state[4][4]) {
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            state[i][j] = DYNAMIC_SBOX[state[i][j]];
+static const uint8_t HEX_ADJ[16][3] = {
+    {1,5,15}, {0,2,6}, {1,3,7}, {2,4,8}, {3,5,9}, {4,0,10}, {1,7,11}, {2,6,12},
+    {7,11,13}, {8,12,14}, {9,13,15}, {0,10,14}, {5,11,15}, {6,10,12}, {7,11,13}, {8,12,14}
+};
+#define MAGIC_SUM 93
+
+static inline uint8_t rotl8(uint8_t value, int shift) {
+    shift &= 7;
+    return (uint8_t)((value << shift) | (value >> (8 - shift)));
+}
+
+static void hexagonal_refraction(uint8_t state[16], const uint8_t rk[16], int round_id) {
+    for (int r = 0; r < 32; r++) {
+        uint8_t next_state[16];
+        for (int i = 0; i < 16; i++) {
+            // Jisugwimundo "Sum of Nodes" + Fractal Chaos
+            uint32_t z = state[i] + state[HEX_ADJ[i][0]] + state[HEX_ADJ[i][1]] + state[HEX_ADJ[i][2]];
+            uint32_t c = (uint32_t)rk[i] ^ (uint32_t)round_id ^ (uint32_t)r ^ MAGIC_SUM;
+            
+            // Fractal iteration: Z = Z^2 + C (6 times for deeper chaos)
+            z = (z * z) + c;
+            z = (z * z) + c;
+            z = (z * z) + c;
+            z = (z * z) + c;
+            z = (z * z) + c;
+            z = (z * z) + c;
+            
+            uint8_t val = (uint8_t)(z ^ (z >> 8) ^ (z >> 16) ^ (z >> 24));
+            val = DYNAMIC_SBOX[val ^ rk[(i + r) % 16]];
+            
+            int shift = ((rk[i] + r + i) % 7) + 1;
+            next_state[i] = rotl8(val, shift);
+        }
+        
+        // Horizontal Diffusion: Ripple along the ring
+        for (int i = 0; i < 16; i++) {
+            uint8_t diff = next_state[i] ^ next_state[(i + 1) % 16];
+            next_state[i] = DYNAMIC_SBOX[diff ^ (uint8_t)r];
+        }
+        
+        // Final key injection via S-Box to prevent linear leakage
+        for (int i = 0; i < 16; i++) {
+            state[i] = DYNAMIC_SBOX[next_state[i] ^ rk[i] ^ (uint8_t)round_id];
         }
     }
 }
 
-static inline void shift_rows(uint8_t state[4][4]) {
+
+
+
+static inline void sub_bytes(uint8_t state[16]) {
+    for (int i = 0; i < 16; i++) {
+        state[i] = DYNAMIC_SBOX[state[i]];
+    }
+}
+
+static inline void shift_rows(uint8_t state[16]) {
     uint8_t tmp;
     // Row 1
-    tmp = state[1][0]; state[1][0] = state[1][1]; state[1][1] = state[1][2]; state[1][2] = state[1][3]; state[1][3] = tmp;
+    tmp = state[4]; state[4] = state[5]; state[5] = state[6]; state[6] = state[7]; state[7] = tmp;
     // Row 2
-    tmp = state[2][0]; uint8_t tmp2 = state[2][1]; state[2][0] = state[2][2]; state[2][1] = state[2][3]; state[2][2] = tmp; state[2][3] = tmp2;
+    tmp = state[8]; uint8_t tmp2 = state[9]; state[8] = state[10]; state[9] = state[11]; state[10] = tmp; state[11] = tmp2;
     // Row 3
-    tmp = state[3][3]; state[3][3] = state[3][2]; state[3][2] = state[3][1]; state[3][1] = state[3][0]; state[3][0] = tmp;
+    tmp = state[15]; state[15] = state[14]; state[14] = state[13]; state[13] = state[12]; state[12] = tmp;
 }
 
-static inline uint8_t xtime(uint8_t x) {
-    return (uint8_t)((x << 1) ^ (((x >> 7) & 1) * 0x1B));
-}
-
-static void mix_columns(uint8_t state[4][4]) {
+static inline void add_round_key(uint8_t state[16], int round) {
+    uint32_t *rk32 = &ROUND_KEYS[round * 4];
     for (int i = 0; i < 4; i++) {
-        uint8_t a = state[0][i];
-        uint8_t b = state[1][i];
-        uint8_t c = state[2][i];
-        uint8_t d = state[3][i];
-        state[0][i] = xtime(a) ^ xtime(b) ^ b ^ c ^ d;
-        state[1][i] = a ^ xtime(b) ^ xtime(c) ^ c ^ d;
-        state[2][i] = a ^ b ^ xtime(c) ^ xtime(d) ^ d;
-        state[3][i] = xtime(a) ^ a ^ b ^ c ^ xtime(d);
+        state[i*4]   ^= DYNAMIC_SBOX[(rk32[i] >> 24) & 0xFF];
+        state[i*4+1] ^= DYNAMIC_SBOX[(rk32[i] >> 16) & 0xFF];
+        state[i*4+2] ^= DYNAMIC_SBOX[(rk32[i] >> 8) & 0xFF];
+        state[i*4+3] ^= DYNAMIC_SBOX[rk32[i] & 0xFF];
     }
 }
 
-static inline void add_round_key(uint8_t state[4][4], int round) {
-    for (int i = 0; i < 4; i++) {
-        uint32_t rk = ROUND_KEYS[round * 4 + i];
-        state[0][i] ^= (rk >> 24) & 0xFF;
-        state[1][i] ^= (rk >> 16) & 0xFF;
-        state[2][i] ^= (rk >> 8) & 0xFF;
-        state[3][i] ^= rk & 0xFF;
-    }
-}
 
 static void choi_encrypt_block(const uint8_t in[BLOCK_SIZE], uint8_t out[BLOCK_SIZE]) {
-    uint8_t state[4][4];
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            state[j][i] = in[i * 4 + j];
-        }
-    }
+    uint8_t state[16];
+    memcpy(state, in, BLOCK_SIZE);
 
     add_round_key(state, 0);
     for (int round = 1; round < AES_NR; round++) {
         sub_bytes(state);
         shift_rows(state);
-        mix_columns(state);
+        
+        uint8_t rk[16];
+        uint32_t *rk32 = &ROUND_KEYS[round * 4];
+        for (int i = 0; i < 4; i++) {
+            rk[i*4]   = (rk32[i] >> 24) & 0xFF;
+            rk[i*4+1] = (rk32[i] >> 16) & 0xFF;
+            rk[i*4+2] = (rk32[i] >> 8) & 0xFF;
+            rk[i*4+3] = rk32[i] & 0xFF;
+        }
+        hexagonal_refraction(state, rk, round);
         add_round_key(state, round);
     }
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, AES_NR);
 
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            out[i * 4 + j] = state[j][i];
-        }
+    // Final Chaos Layer to obliterate any remaining linear traces
+    for (int i = 0; i < 16; i++) {
+        state[i] = DYNAMIC_SBOX[state[i] ^ (uint8_t)i ^ DYNAMIC_SBOX[ROUND_KEYS[i % 4] & 0xFF]];
     }
+
+    memcpy(out, state, BLOCK_SIZE);
 }
+
 
 static void expand_key(const uint8_t *key_hash) {
     // Use first 32 bytes of hash as initial 8 words

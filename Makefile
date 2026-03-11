@@ -1,5 +1,3 @@
-# Makefile for Choi Seok-jeong's Jisugwimundo Cipher Tools
-
 CC = gcc
 CFLAGS = -O3 -Wall -Wextra -march=native
 RM = rm -f
