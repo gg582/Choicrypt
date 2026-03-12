@@ -8,6 +8,8 @@
 #define BLOCK_SIZE 16
 #define AES_NR 32
 #define ROUND_KEY_WORDS (4 * (AES_NR + 1))
+/* Large prime modulus (2^32 - 17) to reduce periodicity in pseudo-random operations */
+#define LARGE_PRIME 4294967279U
 
 /* --- SHA-256 Implementation for Key-Dependent S-Box Generation --- */
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
@@ -130,7 +132,7 @@ static void generate_key_dep_sbox(const uint8_t *key_hash) {
     memcpy(DYNAMIC_SBOX, AES_SBOX, 256);
     uint32_t state = (key_hash[0] << 24) | (key_hash[1] << 16) | (key_hash[2] << 8) | key_hash[3];
     for (int i = 255; i > 0; i--) {
-        state = state * 1103515245u + 12345u;
+        state = (uint32_t)(((uint64_t)state * 1103515245u + 12345u) % LARGE_PRIME);
         uint32_t j = (state ^ key_hash[i % 32]) % (i + 1);
         uint8_t temp = DYNAMIC_SBOX[i];
         DYNAMIC_SBOX[i] = DYNAMIC_SBOX[j];
@@ -158,12 +160,12 @@ static void hexagonal_refraction(uint8_t state[16], const uint8_t rk[16], int ro
             uint32_t c = (uint32_t)rk[i] ^ (uint32_t)round_id ^ (uint32_t)r ^ MAGIC_SUM;
             
             // Fractal iteration: Z = Z^2 + C (6 times for deeper chaos)
-            z = (z * z) + c;
-            z = (z * z) + c;
-            z = (z * z) + c;
-            z = (z * z) + c;
-            z = (z * z) + c;
-            z = (z * z) + c;
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
+            z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             
             uint8_t val = (uint8_t)(z ^ (z >> 8) ^ (z >> 16) ^ (z >> 24));
             val = DYNAMIC_SBOX[val ^ rk[(i + r) % 16]];
@@ -309,12 +311,13 @@ static void transform(uint8_t *data, size_t len) {
 /* Honey Encryption Decoy */
 static void generate_decoy(const uint8_t *key, size_t len, uint8_t *out) {
     uint32_t seed = 0x1337C0DE;
-    for (int i = 0; i < 16; i++) seed = seed * 16777619u ^ key[i];
+    /* Apply prime modulus to the multiplication before XOR-mixing the key byte */
+    for (int i = 0; i < 16; i++) seed = (uint32_t)(((uint64_t)seed * 16777619u % LARGE_PRIME) ^ key[i]);
     
     const char *corpus[] = {"Access granted.", "Initialize sequence...", "System stable.", "Protocol bypass active.", "Entropy verified."};
     size_t written = 0;
     while (written < len) {
-        seed = seed * 1103515245u + 12345u;
+        seed = (uint32_t)(((uint64_t)seed * 1103515245u + 12345u) % LARGE_PRIME);
         const char *phrase = corpus[(seed >> 16) % 5];
         size_t plen = strlen(phrase);
         if (written + plen > len) plen = len - written;
