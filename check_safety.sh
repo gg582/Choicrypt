@@ -5,7 +5,7 @@
 
 echo "[*] Cleaning up old artifacts..."
 make clean > /dev/null
-rm -f sample.bin sample.bin.choi sample.bin.dec sample.key audit_report.txt
+rm -f sample.bin sample.bin.choi sample.bin.dec sample.bin.stdout.dec sample.key audit_report.txt
 
 echo "[*] Compiling binaries..."
 make all > /dev/null
@@ -28,12 +28,21 @@ echo "$PW" | ./choienc sample.bin
 echo "[*] Decrypting data..."
 echo "$PW" | ./choidec sample.bin.choi sample.bin.dec
 
+echo "[*] Decrypting via inferred .choi path to stdout..."
+echo "$PW" | ./choidec sample.bin /dev/stdout > sample.bin.stdout.dec
+
 echo "[*] Verifying integrity..."
 if diff sample.bin sample.bin.dec > /dev/null; then
     echo "[+] Integrity Check: PASSED"
 else
     echo "[!] Integrity Check: FAILED"
     # exit 1 # Don't exit yet, still want to see audit if it partially worked
+fi
+
+if diff sample.bin sample.bin.stdout.dec > /dev/null; then
+    echo "[+] Stdout Integrity Check: PASSED"
+else
+    echo "[!] Stdout Integrity Check: FAILED"
 fi
 
 echo "[*] Running Security Audit (NIST + Autocorrelation + Independence)..."
