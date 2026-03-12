@@ -13,14 +13,36 @@ int main(int argc, char *argv[]) {
 
     derive_key(pw);
 
-    FILE *f = fopen(argv[1], "rb");
-    if (!f) return perror("fopen"), 1;
+    const char *input_path = argv[1];
+    size_t input_len = strlen(argv[1]);
+    char *resolved_path = NULL;
+    if (input_len < 5 || strcmp(argv[1] + input_len - 5, ".choi") != 0) {
+        resolved_path = malloc(input_len + 6);
+        if (!resolved_path) return 1;
+        snprintf(resolved_path, input_len + 6, "%s.choi", argv[1]);
+        FILE *probe = fopen(resolved_path, "rb");
+        if (probe) {
+            fclose(probe);
+            input_path = resolved_path;
+        }
+    }
+
+    FILE *f = fopen(input_path, "rb");
+    if (!f) {
+        free(resolved_path);
+        return perror("fopen"), 1;
+    }
 
     fseek(f, 0, SEEK_END);
     size_t len = ftell(f);
     rewind(f);
 
-    if (len < 4) { fprintf(stderr, "Invalid file.\n"); return 1; }
+    if (len < 4) {
+        fprintf(stderr, "Invalid file.\n");
+        fclose(f);
+        free(resolved_path);
+        return 1;
+    }
 
     uint8_t *buf = malloc(len);
     fread(buf, 1, len, f);
@@ -44,6 +66,7 @@ int main(int argc, char *argv[]) {
     }
     fclose(out);
 
+    free(resolved_path);
     free(buf);
     return 0;
 }
