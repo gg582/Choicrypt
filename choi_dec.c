@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include "choi_common.h"
 
+#define CHOI_SUFFIX ".choi"
+#define CHOI_SUFFIX_LEN 5
+
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: echo 'pw' | %s <in> <out>\n", argv[0]);
@@ -16,14 +19,17 @@ int main(int argc, char *argv[]) {
     const char *input_path = argv[1];
     size_t input_len = strlen(argv[1]);
     char *resolved_path = NULL;
-    if (input_len < 5 || strcmp(argv[1] + input_len - 5, ".choi") != 0) {
-        resolved_path = malloc(input_len + 6);
-        if (!resolved_path) return 1;
-        snprintf(resolved_path, input_len + 6, "%s.choi", argv[1]);
+    if (input_len < CHOI_SUFFIX_LEN || strcmp(argv[1] + input_len - CHOI_SUFFIX_LEN, CHOI_SUFFIX) != 0) {
+        resolved_path = malloc(input_len + CHOI_SUFFIX_LEN + 1);
+        if (!resolved_path) return perror("malloc"), 1;
+        snprintf(resolved_path, input_len + CHOI_SUFFIX_LEN + 1, "%s%s", argv[1], CHOI_SUFFIX);
         FILE *probe = fopen(resolved_path, "rb");
         if (probe) {
             fclose(probe);
             input_path = resolved_path;
+        } else {
+            free(resolved_path);
+            resolved_path = NULL;
         }
     }
 
@@ -45,6 +51,11 @@ int main(int argc, char *argv[]) {
     }
 
     uint8_t *buf = malloc(len);
+    if (!buf) {
+        fclose(f);
+        free(resolved_path);
+        return perror("malloc"), 1;
+    }
     fread(buf, 1, len, f);
     fclose(f);
 
