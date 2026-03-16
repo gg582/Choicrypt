@@ -7,29 +7,29 @@ graph TD
     end
 
     subgraph Round_0
-        State --> ARK0[AddRoundKey 0 (S-Box Masked)]
+        State --> ARK0["AddRoundKey 0 (S-Box Masked)"]
     end
 
     subgraph Intermediate_Rounds_1_to_31
-        ARK0 --> SB[Key-Dependent SubBytes]
+        ARK0 --> SB["Key-Dependent SubBytes"]
         SB --> SR[ShiftRows]
-        SR --> HR[Hexagonal Refraction (Fractal Chaos)]
-        HR --> ARK[AddRoundKey N (S-Box Masked)]
+        SR --> HR["Hexagonal Refraction (Fractal Chaos)"]
+        HR --> ARK["AddRoundKey N (S-Box Masked)"]
+        
+        %% Visual representation of the loop
+        ARK -.-> SB
     end
 
     subgraph Final_Round_32
-        ARK --> SB32[Key-Dependent SubBytes]
+        ARK --> SB32["Key-Dependent SubBytes"]
         SB32 --> SR32[ShiftRows]
-        SR32 --> ARK32[AddRoundKey 32 (S-Box Masked)]
-        ARK32 --> FCL[Final Chaos Layer (S-Box / Key Ripple)]
+        SR32 --> ARK32["AddRoundKey 32 (S-Box Masked)"]
+        ARK32 --> FCL["Final Chaos Layer (S-Box / Key Ripple)"]
     end
 
     subgraph Output
         FCL --> Out[128-bit Ciphertext Block]
     end
-
-    %% Loop for Rounds 1-31
-    ARK -- "Repeated for Rounds 1-31" --> SB
 ```
 
 ### Hexagonal Refraction (Inner Loop: 32 iterations)
