@@ -28,7 +28,7 @@
 ```
 SubBytes → ShiftRows → MixColumns → AddRoundKey
 ```
-- 각 라운드는 **명확하고 분리된 치환-置換 레이어**로 구성
+- 각 라운드는 **명확하고 분리된 치환-순열 레이어**로 구성
 - `MixColumns`로 열 단위 확산(Diffusion) 제공
 - 마지막 라운드에서는 `MixColumns` 생략
 
