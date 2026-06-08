@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "choi_common.h"
 
 #define CHOI_SUFFIX ".choi"
@@ -13,8 +14,6 @@ int main(int argc, char *argv[]) {
 
     char pw[256];
     if (scanf("%255s", pw) != 1) return 1;
-
-    derive_key(pw);
 
     const char *input_path = argv[1];
     size_t input_len = strlen(argv[1]);
@@ -43,41 +42,54 @@ int main(int argc, char *argv[]) {
     size_t len = ftell(f);
     rewind(f);
 
-    if (len < 4) {
+    if (len < NONCE_SIZE + HMAC_SIZE) {
         fprintf(stderr, "Invalid file.\n");
         fclose(f);
         free(resolved_path);
         return 1;
     }
 
-    uint8_t *buf = malloc(len);
-    if (!buf) {
+    uint8_t nonce[NONCE_SIZE];
+    if (fread(nonce, 1, NONCE_SIZE, f) != NONCE_SIZE) {
+        fclose(f);
+        free(resolved_path);
+        return 1;
+    }
+
+    size_t ct_len = len - NONCE_SIZE;
+    uint8_t *ct = malloc(ct_len);
+    if (!ct) {
         fclose(f);
         free(resolved_path);
         return perror("malloc"), 1;
     }
-    fread(buf, 1, len, f);
+    fread(ct, 1, ct_len, f);
     fclose(f);
 
-    transform(buf, len);
+    uint8_t enc_key[32], mac_key[32];
+    derive_keys(pw, nonce, NONCE_SIZE, enc_key, mac_key);
 
-    size_t data_len = len - 4;
-    uint32_t expected_cs = calculate_checksum(buf, data_len);
-    uint32_t read_cs = (buf[data_len] << 24) | (buf[data_len+1] << 16) | (buf[data_len+2] << 8) | buf[data_len+3];
+    transform(ct, ct_len, nonce);
+
+    size_t plain_len = ct_len - HMAC_SIZE;
+    uint8_t *plain = ct;
+    uint8_t *read_hmac = ct + plain_len;
+
+    uint8_t expected_hmac[HMAC_SIZE];
+    hmac_sha256(mac_key, 32, plain, plain_len, expected_hmac);
 
     FILE *out = fopen(argv[2], "wb");
-    if (expected_cs == read_cs) {
-        fwrite(buf, 1, data_len, out);
+    if (memcmp(expected_hmac, read_hmac, HMAC_SIZE) == 0) {
+        fwrite(plain, 1, plain_len, out);
     } else {
-        // Incorrect key: generate decoy text
-        uint8_t *decoy = malloc(data_len);
-        generate_decoy((const uint8_t *)pw, data_len, decoy);
-        fwrite(decoy, 1, data_len, out);
+        uint8_t *decoy = malloc(plain_len);
+        generate_secure_decoy(mac_key, plain_len, decoy);
+        fwrite(decoy, 1, plain_len, out);
         free(decoy);
     }
     fclose(out);
 
     free(resolved_path);
-    free(buf);
+    free(ct);
     return 0;
 }

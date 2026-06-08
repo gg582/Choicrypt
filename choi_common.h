@@ -4,14 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define BLOCK_SIZE 16
 #define AES_NR 32
 #define ROUND_KEY_WORDS (4 * (AES_NR + 1))
-/* Large prime modulus (2^32 - 17) to reduce periodicity in pseudo-random operations */
 #define LARGE_PRIME 4294967279U
+#define NONCE_SIZE 16
+#define HMAC_SIZE 32
 
-/* --- SHA-256 Implementation for Key-Dependent S-Box Generation --- */
+/* --- SHA-256 Implementation --- */
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 #define CH(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
 #define MAJ(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
@@ -41,7 +43,7 @@ typedef struct {
 static void sha256_transform(SHA256_CTX *ctx, const uint8_t data[]) {
     uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
     for (i = 0, j = 0; i < 16; ++i, j += 4)
-        m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
+        m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | data[j + 3];
     for (; i < 64; ++i)
         m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
     a = ctx->state[0]; b = ctx->state[1]; c = ctx->state[2]; d = ctx->state[3];
@@ -102,11 +104,68 @@ static void sha256_final(SHA256_CTX *ctx, uint8_t hash[]) {
     }
 }
 
-/* --- Cipher Core Logic --- */
+static void sha256(const uint8_t *data, size_t len, uint8_t hash[32]) {
+    SHA256_CTX ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, hash);
+}
 
+static void hmac_sha256(const uint8_t *key, size_t keylen, const uint8_t *msg, size_t msglen, uint8_t out[32]) {
+    uint8_t k_ipad[64], k_opad[64];
+    uint8_t tk[32];
+    const uint8_t *k = key;
+    size_t kl = keylen;
+    if (keylen > 64) {
+        sha256(key, keylen, tk);
+        k = tk; kl = 32;
+    }
+    memset(k_ipad, 0x36, 64);
+    memset(k_opad, 0x5c, 64);
+    for (size_t i = 0; i < kl; i++) {
+        k_ipad[i] ^= k[i];
+        k_opad[i] ^= k[i];
+    }
+    SHA256_CTX ctx;
+    uint8_t inner[32];
+    sha256_init(&ctx);
+    sha256_update(&ctx, k_ipad, 64);
+    sha256_update(&ctx, msg, msglen);
+    sha256_final(&ctx, inner);
+    sha256_init(&ctx);
+    sha256_update(&ctx, k_opad, 64);
+    sha256_update(&ctx, inner, 32);
+    sha256_final(&ctx, out);
+}
+
+static void pbkdf2_hmac_sha256(const char *pw, size_t pwlen, const uint8_t *salt, size_t saltlen, uint32_t iter, uint8_t *out, size_t outlen) {
+    size_t i = 1;
+    size_t generated = 0;
+    uint8_t *salt_i = malloc(saltlen + 4);
+    while (generated < outlen) {
+        size_t need = (outlen - generated < 32) ? (outlen - generated) : 32;
+        memcpy(salt_i, salt, saltlen);
+        salt_i[saltlen] = (i >> 24) & 0xFF;
+        salt_i[saltlen+1] = (i >> 16) & 0xFF;
+        salt_i[saltlen+2] = (i >> 8) & 0xFF;
+        salt_i[saltlen+3] = i & 0xFF;
+        uint8_t u[32], f[32];
+        hmac_sha256((const uint8_t*)pw, pwlen, salt_i, saltlen + 4, u);
+        memcpy(f, u, 32);
+        for (uint32_t c = 1; c < iter; c++) {
+            hmac_sha256((const uint8_t*)pw, pwlen, u, 32, u);
+            for (int j = 0; j < 32; j++) f[j] ^= u[j];
+        }
+        memcpy(out + generated, f, need);
+        generated += need;
+        i++;
+    }
+    free(salt_i);
+}
+
+/* --- Cipher Core Logic (Preserved) --- */
 static uint8_t DYNAMIC_SBOX[256];
 static uint32_t ROUND_KEYS[ROUND_KEY_WORDS];
-static uint8_t BASE_COUNTER[BLOCK_SIZE];
 static int ENGINE_READY = 0;
 
 static const uint8_t AES_SBOX[256] = {
@@ -155,54 +214,37 @@ static void hexagonal_refraction(uint8_t state[16], const uint8_t rk[16], int ro
     for (int r = 0; r < 32; r++) {
         uint8_t next_state[16];
         for (int i = 0; i < 16; i++) {
-            // Jisugwimundo "Sum of Nodes" + Fractal Chaos
             uint32_t z = state[i] + state[HEX_ADJ[i][0]] + state[HEX_ADJ[i][1]] + state[HEX_ADJ[i][2]];
             uint32_t c = (uint32_t)rk[i] ^ (uint32_t)round_id ^ (uint32_t)r ^ MAGIC_SUM;
-            
-            // Fractal iteration: Z = Z^2 + C (6 times for deeper chaos)
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
             z = (uint32_t)(((uint64_t)z * z + c) % LARGE_PRIME);
-            
             uint8_t val = (uint8_t)(z ^ (z >> 8) ^ (z >> 16) ^ (z >> 24));
             val = DYNAMIC_SBOX[val ^ rk[(i + r) % 16]];
-            
             int shift = ((rk[i] + r + i) % 7) + 1;
             next_state[i] = rotl8(val, shift);
         }
-        
-        // Horizontal Diffusion: Ripple along the ring
         for (int i = 0; i < 16; i++) {
             uint8_t diff = next_state[i] ^ next_state[(i + 1) % 16];
             next_state[i] = DYNAMIC_SBOX[diff ^ (uint8_t)r];
         }
-        
-        // Final key injection via S-Box to prevent linear leakage
         for (int i = 0; i < 16; i++) {
             state[i] = DYNAMIC_SBOX[next_state[i] ^ rk[i] ^ (uint8_t)round_id];
         }
     }
 }
 
-
-
-
 static inline void sub_bytes(uint8_t state[16]) {
-    for (int i = 0; i < 16; i++) {
-        state[i] = DYNAMIC_SBOX[state[i]];
-    }
+    for (int i = 0; i < 16; i++) state[i] = DYNAMIC_SBOX[state[i]];
 }
 
 static inline void shift_rows(uint8_t state[16]) {
     uint8_t tmp;
-    // Row 1
     tmp = state[4]; state[4] = state[5]; state[5] = state[6]; state[6] = state[7]; state[7] = tmp;
-    // Row 2
     tmp = state[8]; uint8_t tmp2 = state[9]; state[8] = state[10]; state[9] = state[11]; state[10] = tmp; state[11] = tmp2;
-    // Row 3
     tmp = state[15]; state[15] = state[14]; state[14] = state[13]; state[13] = state[12]; state[12] = tmp;
 }
 
@@ -216,16 +258,13 @@ static inline void add_round_key(uint8_t state[16], int round) {
     }
 }
 
-
 static void choi_encrypt_block(const uint8_t in[BLOCK_SIZE], uint8_t out[BLOCK_SIZE]) {
     uint8_t state[16];
     memcpy(state, in, BLOCK_SIZE);
-
     add_round_key(state, 0);
     for (int round = 1; round < AES_NR; round++) {
         sub_bytes(state);
         shift_rows(state);
-        
         uint8_t rk[16];
         uint32_t *rk32 = &ROUND_KEYS[round * 4];
         for (int i = 0; i < 4; i++) {
@@ -240,22 +279,16 @@ static void choi_encrypt_block(const uint8_t in[BLOCK_SIZE], uint8_t out[BLOCK_S
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, AES_NR);
-
-    // Final Chaos Layer to obliterate any remaining linear traces
     for (int i = 0; i < 16; i++) {
         state[i] = DYNAMIC_SBOX[state[i] ^ (uint8_t)i ^ DYNAMIC_SBOX[ROUND_KEYS[i % 4] & 0xFF]];
     }
-
     memcpy(out, state, BLOCK_SIZE);
 }
 
-
 static void expand_key(const uint8_t *key_hash) {
-    // Use first 32 bytes of hash as initial 8 words
     for (int i = 0; i < 8; i++) {
         ROUND_KEYS[i] = (key_hash[i*4] << 24) | (key_hash[i*4+1] << 16) | (key_hash[i*4+2] << 8) | key_hash[i*4+3];
     }
-    // Expand to ROUND_KEY_WORDS
     for (int i = 8; i < ROUND_KEY_WORDS; i++) {
         uint32_t temp = ROUND_KEYS[i - 1];
         if (i % 8 == 0) {
@@ -268,36 +301,22 @@ static void expand_key(const uint8_t *key_hash) {
     }
 }
 
-static void derive_key(const char *pw) {
-    uint8_t hash[32];
-    SHA256_CTX ctx;
-    sha256_init(&ctx);
-    sha256_update(&ctx, (const uint8_t *)pw, strlen(pw));
-    sha256_final(&ctx, hash);
-
-    generate_key_dep_sbox(hash);
-    expand_key(hash);
-    
-    // Set BASE_COUNTER from second part of hash or similar
-    memset(BASE_COUNTER, 0, BLOCK_SIZE);
-    for(int i=0; i<BLOCK_SIZE; i++) BASE_COUNTER[i] = hash[i] ^ hash[i+16];
-
+/* --- Secure Key Derivation --- */
+static void derive_keys(const char *pw, const uint8_t *salt, size_t salt_len, uint8_t enc_key[32], uint8_t mac_key[32]) {
+    uint8_t master[64];
+    pbkdf2_hmac_sha256(pw, strlen(pw), salt, salt_len, 100000, master, 64);
+    memcpy(enc_key, master, 32);
+    memcpy(mac_key, master + 32, 32);
+    generate_key_dep_sbox(enc_key);
+    expand_key(enc_key);
     ENGINE_READY = 1;
 }
 
-static uint32_t calculate_checksum(const uint8_t *data, size_t len) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-    }
-    return ~crc;
-}
-
-static void transform(uint8_t *data, size_t len) {
+/* --- Stream Transform with Per-File Nonce --- */
+static void transform(uint8_t *data, size_t len, const uint8_t nonce[BLOCK_SIZE]) {
     if (!ENGINE_READY) return;
     uint8_t counter[BLOCK_SIZE], keystream[BLOCK_SIZE];
-    memcpy(counter, BASE_COUNTER, BLOCK_SIZE);
+    memcpy(counter, nonce, BLOCK_SIZE);
     size_t offset = 0;
     while (offset < len) {
         choi_encrypt_block(counter, keystream);
@@ -308,22 +327,17 @@ static void transform(uint8_t *data, size_t len) {
     }
 }
 
-/* Honey Encryption Decoy */
-static void generate_decoy(const uint8_t *key, size_t len, uint8_t *out) {
-    uint32_t seed = 0x1337C0DE;
-    /* Apply prime modulus to the multiplication before XOR-mixing the key byte */
-    for (int i = 0; i < 16; i++) seed = (uint32_t)(((uint64_t)seed * 16777619u % LARGE_PRIME) ^ key[i]);
-    
-    const char *corpus[] = {"Access granted.", "Initialize sequence...", "System stable.", "Protocol bypass active.", "Entropy verified."};
-    size_t written = 0;
-    while (written < len) {
-        seed = (uint32_t)(((uint64_t)seed * 1103515245u + 12345u) % LARGE_PRIME);
-        const char *phrase = corpus[(seed >> 16) % 5];
-        size_t plen = strlen(phrase);
-        if (written + plen > len) plen = len - written;
-        memcpy(out + written, phrase, plen);
-        written += plen;
-        if (written < len) out[written++] = ' ';
+/* --- CSPRNG Decoy (HMAC-DRBG style) --- */
+static void generate_secure_decoy(const uint8_t *mac_key, size_t len, uint8_t *out) {
+    uint8_t counter[32] = {0};
+    uint8_t block[32];
+    size_t offset = 0;
+    while (offset < len) {
+        hmac_sha256(mac_key, 32, counter, 32, block);
+        size_t n = (len - offset < 32) ? (len - offset) : 32;
+        memcpy(out + offset, block, n);
+        offset += n;
+        for (int i = 31; i >= 0; i--) if (++counter[i]) break;
     }
 }
 
