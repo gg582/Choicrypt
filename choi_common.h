@@ -6,6 +6,14 @@
 #include <string.h>
 #include <stdlib.h>
 
+#if defined(__SSSE3__)
+#include <emmintrin.h>
+#include <tmmintrin.h>
+#define CHOI_HAS_SIMD 1
+#else
+#define CHOI_HAS_SIMD 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -321,6 +329,34 @@ static inline void choi_inv_shift_rows(uint8_t state[CHOI_BLOCK_SIZE]) {
     t = state[12]; state[12] = state[13]; state[13] = state[14]; state[14] = state[15]; state[15] = t;
 }
 
+#if CHOI_HAS_SIMD
+/* SIMD-accelerated primitives (SSSE3).  The S-Box and MixColumns layers
+ * remain scalar because the key-dependent 256-entry S-Box does not vectorise
+ * cleanly without AVX-512 VBMI2 or large lookup tables. */
+static inline void choi_add_round_key_simd(uint8_t state[CHOI_BLOCK_SIZE], int round) {
+    const uint8_t *rk = (const uint8_t *)&CHOI_ROUND_KEYS[round * 4];
+    __m128i s = _mm_loadu_si128((const __m128i *)state);
+    __m128i k = _mm_loadu_si128((const __m128i *)rk);
+    _mm_storeu_si128((__m128i *)state, _mm_xor_si128(s, k));
+}
+
+static inline void choi_shift_rows_simd(uint8_t state[CHOI_BLOCK_SIZE]) {
+    __m128i s = _mm_loadu_si128((const __m128i *)state);
+    const __m128i sh = _mm_setr_epi8(
+        0, 5, 10, 15, 4, 9, 14, 3, 8, 13, 2, 7, 12, 1, 6, 11
+    );
+    _mm_storeu_si128((__m128i *)state, _mm_shuffle_epi8(s, sh));
+}
+
+static inline void choi_inv_shift_rows_simd(uint8_t state[CHOI_BLOCK_SIZE]) {
+    __m128i s = _mm_loadu_si128((const __m128i *)state);
+    const __m128i sh = _mm_setr_epi8(
+        0, 13, 10, 7, 4, 1, 14, 11, 8, 5, 2, 15, 12, 9, 6, 3
+    );
+    _mm_storeu_si128((__m128i *)state, _mm_shuffle_epi8(s, sh));
+}
+#endif /* CHOI_HAS_SIMD */
+
 static inline uint8_t choi_xtime(uint8_t x) {
     return (uint8_t)((x << 1) ^ ((x & 0x80U) ? 0x1bU : 0x00U));
 }
@@ -358,6 +394,78 @@ static void choi_inv_mix_columns(uint8_t state[CHOI_BLOCK_SIZE]) {
         col[3] = choi_gf_mul(s0, 0x0b) ^ choi_gf_mul(s1, 0x0d) ^ choi_gf_mul(s2, 0x09) ^ choi_gf_mul(s3, 0x0e);
     }
 }
+
+#if CHOI_HAS_SIMD
+/* SIMD MixColumns helpers over GF(2^8) with AES irreducible polynomial. */
+static inline __m128i choi_xtime_vec(__m128i v) {
+    /* Byte-wise doubling without cross-byte carry; equivalent to (v<<1)&0xFE. */
+    __m128i shifted = _mm_add_epi8(v, v);
+    __m128i hi = _mm_and_si128(v, _mm_set1_epi8((char)0x80));
+    __m128i mask = _mm_cmpeq_epi8(hi, _mm_set1_epi8((char)0x80));
+    __m128i reduc = _mm_and_si128(mask, _mm_set1_epi8((char)0x1b));
+    return _mm_xor_si128(shifted, reduc);
+}
+
+static inline __m128i choi_gf_mul_vec_09(__m128i v) {
+    __m128i x1 = choi_xtime_vec(v);
+    __m128i x2 = choi_xtime_vec(x1);
+    __m128i x3 = choi_xtime_vec(x2);
+    return _mm_xor_si128(x3, v);
+}
+
+static inline __m128i choi_gf_mul_vec_0b(__m128i v) {
+    __m128i x1 = choi_xtime_vec(v);
+    __m128i x2 = choi_xtime_vec(x1);
+    __m128i x3 = choi_xtime_vec(x2);
+    return _mm_xor_si128(_mm_xor_si128(x3, x1), v);
+}
+
+static inline __m128i choi_gf_mul_vec_0d(__m128i v) {
+    __m128i x1 = choi_xtime_vec(v);
+    __m128i x2 = choi_xtime_vec(x1);
+    __m128i x3 = choi_xtime_vec(x2);
+    return _mm_xor_si128(_mm_xor_si128(x3, x2), v);
+}
+
+static inline __m128i choi_gf_mul_vec_0e(__m128i v) {
+    __m128i x1 = choi_xtime_vec(v);
+    __m128i x2 = choi_xtime_vec(x1);
+    __m128i x3 = choi_xtime_vec(x2);
+    return _mm_xor_si128(_mm_xor_si128(x3, x2), x1);
+}
+
+static void choi_mix_columns_simd(uint8_t state[CHOI_BLOCK_SIZE]) {
+    const __m128i sh1 = _mm_setr_epi8(1,2,3,0, 5,6,7,4, 9,10,11,8, 13,14,15,12);
+    const __m128i sh2 = _mm_setr_epi8(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
+    const __m128i sh3 = _mm_setr_epi8(3,0,1,2, 7,4,5,6, 11,8,9,10, 15,12,13,14);
+    __m128i s = _mm_loadu_si128((const __m128i *)state);
+    __m128i x = choi_xtime_vec(s);
+    __m128i r1  = _mm_shuffle_epi8(s, sh1);
+    __m128i r1x = _mm_shuffle_epi8(x, sh1);
+    __m128i r2  = _mm_shuffle_epi8(s, sh2);
+    __m128i r3  = _mm_shuffle_epi8(s, sh3);
+    __m128i out = _mm_xor_si128(x, r1);
+    out = _mm_xor_si128(out, r1x);
+    out = _mm_xor_si128(out, r2);
+    out = _mm_xor_si128(out, r3);
+    _mm_storeu_si128((__m128i *)state, out);
+}
+
+static void choi_inv_mix_columns_simd(uint8_t state[CHOI_BLOCK_SIZE]) {
+    const __m128i sh1 = _mm_setr_epi8(1,2,3,0, 5,6,7,4, 9,10,11,8, 13,14,15,12);
+    const __m128i sh2 = _mm_setr_epi8(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
+    const __m128i sh3 = _mm_setr_epi8(3,0,1,2, 7,4,5,6, 11,8,9,10, 15,12,13,14);
+    __m128i s = _mm_loadu_si128((const __m128i *)state);
+    __m128i a = choi_gf_mul_vec_0e(s);
+    __m128i b = choi_gf_mul_vec_0b(s);
+    __m128i c = choi_gf_mul_vec_0d(s);
+    __m128i d = choi_gf_mul_vec_09(s);
+    __m128i out = _mm_xor_si128(a, _mm_shuffle_epi8(d, sh3));
+    out = _mm_xor_si128(out, _mm_shuffle_epi8(c, sh2));
+    out = _mm_xor_si128(out, _mm_shuffle_epi8(b, sh1));
+    _mm_storeu_si128((__m128i *)state, out);
+}
+#endif /* CHOI_HAS_SIMD */
 
 /* ------------------------------------------------------------------
  * Hexagonal Layer
@@ -432,23 +540,37 @@ static void choi_expand_key(const uint8_t master_key[CHOI_KEY_SIZE]) {
 /* ------------------------------------------------------------------
  * Block Encryption / Decryption
  * ------------------------------------------------------------------ */
+#if CHOI_HAS_SIMD
+#define CHOI_ADD_RK choi_add_round_key_simd
+#define CHOI_SHIFT  choi_shift_rows_simd
+#define CHOI_ISHIFT choi_inv_shift_rows_simd
+#define CHOI_MIX    choi_mix_columns_simd
+#define CHOI_IMIX   choi_inv_mix_columns_simd
+#else
+#define CHOI_ADD_RK choi_add_round_key
+#define CHOI_SHIFT  choi_shift_rows
+#define CHOI_ISHIFT choi_inv_shift_rows
+#define CHOI_MIX    choi_mix_columns
+#define CHOI_IMIX   choi_inv_mix_columns
+#endif
+
 static void choi_encrypt_block(const uint8_t in[CHOI_BLOCK_SIZE],
                                uint8_t out[CHOI_BLOCK_SIZE]) {
     uint8_t state[CHOI_BLOCK_SIZE];
     memcpy(state, in, CHOI_BLOCK_SIZE);
 
-    choi_add_round_key(state, 0);
+    CHOI_ADD_RK(state, 0);
     for (int round = 1; round < CHOI_NR; ++round) {
         choi_sub_bytes(state);
-        choi_shift_rows(state);
-        choi_mix_columns(state);
+        CHOI_SHIFT(state);
+        CHOI_MIX(state);
         choi_hexagonal_layer(state, round);
-        choi_add_round_key(state, round);
+        CHOI_ADD_RK(state, round);
     }
     choi_sub_bytes(state);
-    choi_shift_rows(state);
+    CHOI_SHIFT(state);
     choi_hexagonal_layer(state, CHOI_NR);
-    choi_add_round_key(state, CHOI_NR);
+    CHOI_ADD_RK(state, CHOI_NR);
 
     memcpy(out, state, CHOI_BLOCK_SIZE);
 }
@@ -458,21 +580,27 @@ static void choi_decrypt_block(const uint8_t in[CHOI_BLOCK_SIZE],
     uint8_t state[CHOI_BLOCK_SIZE];
     memcpy(state, in, CHOI_BLOCK_SIZE);
 
-    choi_add_round_key(state, CHOI_NR);
+    CHOI_ADD_RK(state, CHOI_NR);
     choi_inv_hexagonal_layer(state, CHOI_NR);
-    choi_inv_shift_rows(state);
+    CHOI_ISHIFT(state);
     choi_inv_sub_bytes(state);
     for (int round = CHOI_NR - 1; round >= 1; --round) {
-        choi_add_round_key(state, round);
+        CHOI_ADD_RK(state, round);
         choi_inv_hexagonal_layer(state, round);
-        choi_inv_mix_columns(state);
-        choi_inv_shift_rows(state);
+        CHOI_IMIX(state);
+        CHOI_ISHIFT(state);
         choi_inv_sub_bytes(state);
     }
-    choi_add_round_key(state, 0);
+    CHOI_ADD_RK(state, 0);
 
     memcpy(out, state, CHOI_BLOCK_SIZE);
 }
+
+#undef CHOI_ADD_RK
+#undef CHOI_SHIFT
+#undef CHOI_ISHIFT
+#undef CHOI_MIX
+#undef CHOI_IMIX
 
 /* ------------------------------------------------------------------
  * Key Derivation

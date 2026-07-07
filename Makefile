@@ -1,7 +1,7 @@
 # Choicrypt build system
 
 CC = gcc
-CFLAGS = -O2 -Wall -Wextra -Wpedantic -std=c11
+CFLAGS = -O2 -Wall -Wextra -Wpedantic -std=c11 -mssse3
 RM = rm -f
 
 # Main binaries

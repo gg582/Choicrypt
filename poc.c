@@ -10,10 +10,13 @@
  *   6. Obfuscated pipeline round-trip
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "choi_common.h"
 #include "virtual_silicon.h"
@@ -21,6 +24,12 @@
 #include "obfuscated_pipeline.h"
 #include <fcntl.h>
 #include <unistd.h>
+
+static double now_seconds(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0.0;
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len) {
     printf("%s", label);
@@ -295,6 +304,57 @@ static void phase6_obfuscated_pipeline(void) {
         printf("FAIL: Obfuscated pipeline round-trip mismatch\n");
 }
 
+/* ------------------------------------------------------------------
+ * Phase 7: Performance benchmark
+ * ------------------------------------------------------------------ */
+static void phase7_perf(void) {
+    printf("\n=== Phase 7: Performance benchmark ===\n");
+#if CHOI_HAS_SIMD
+    printf("SIMD acceleration: SSSE3 enabled\n");
+#else
+    printf("SIMD acceleration: none (scalar build)\n");
+#endif
+
+    const char *pw = "perf_demo_password";
+    uint8_t salt[CHOI_SALT_SIZE] = {0};
+    uint8_t enc_key[CHOI_KEY_SIZE], mac_key[CHOI_KEY_SIZE];
+    choi_derive_keys(pw, salt, enc_key, mac_key);
+
+    /* 1. Raw block cipher throughput. */
+    uint8_t pt[CHOI_BLOCK_SIZE] = "PerfTestBlock!!!";
+    uint8_t ct[CHOI_BLOCK_SIZE];
+    uint8_t acc[CHOI_BLOCK_SIZE] = {0};
+    const size_t block_iters = 1000000;
+    double t0 = now_seconds();
+    for (size_t i = 0; i < block_iters; ++i) {
+        choi_encrypt_block(pt, ct);
+        for (int j = 0; j < CHOI_BLOCK_SIZE; ++j) acc[j] ^= ct[j];
+    }
+    double t1 = now_seconds();
+    double block_sec = (double)block_iters / (t1 - t0);
+    double block_mbps = (double)block_iters * CHOI_BLOCK_SIZE / (1024.0 * 1024.0) / (t1 - t0);
+    printf("Raw block encrypt: %.2f MB/s, %.0f blocks/s\n", block_mbps, block_sec);
+    print_hex("Accumulator: ", acc, CHOI_BLOCK_SIZE);
+
+    /* 2. CTR mode throughput on a 16 MiB buffer. */
+    size_t ctr_len = 16 * 1024 * 1024;
+    uint8_t *ctr_buf = (uint8_t *)malloc(ctr_len);
+    if (ctr_buf) {
+        uint8_t nonce[CHOI_NONCE_SIZE] = {0};
+        memset(ctr_buf, 0xAA, ctr_len);
+        double t2 = now_seconds();
+        choi_transform(ctr_buf, ctr_len, nonce);
+        double t3 = now_seconds();
+        double ctr_mbps = (double)ctr_len / (1024.0 * 1024.0) / (t3 - t2);
+        printf("CTR transform:     %.2f MB/s\n", ctr_mbps);
+        free(ctr_buf);
+    } else {
+        printf("CTR transform: skipped (malloc failed)\n");
+    }
+
+    (void)enc_key; (void)mac_key;
+}
+
 /* ------------------------------------------------------------------ */
 int main(void) {
     printf("=== CHOICRYPT PoC / Verification ===\n");
@@ -306,6 +366,7 @@ int main(void) {
     phase4_virtual_silicon();
     phase5_dynamic_asm();
     phase6_obfuscated_pipeline();
+    phase7_perf();
 
     printf("\n=== PoC complete ===\n");
     return 0;

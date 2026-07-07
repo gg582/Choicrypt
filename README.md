@@ -49,14 +49,28 @@ The final round omits `MixColumns`, matching AES convention, but keeps the
 `HexagonalLayer` so the key-dependent antipodal shuffle is present in every
 round.
 
-### 1.2 Key-Dependent S-Box
+### 1.2 SIMD Acceleration
+
+On x86-64 targets the build enables `-mssse3` and the SP-network uses
+SSSE3 intrinsics for the linear layers:
+
+* `AddRoundKey` — 128-bit XOR (`_mm_xor_si128`)
+* `ShiftRows` / `InvShiftRows` — byte shuffle (`_mm_shuffle_epi8`)
+* `MixColumns` / `InvMixColumns` — 4-column parallel GF(2⁸) arithmetic
+
+The key-dependent S-Box and the `HexagonalLayer` remain scalar because their
+256-entry lookups do not vectorise cleanly without AVX-512 VBMI2 or large
+bit-matrix tricks.  If SSSE3 is unavailable at compile time the code falls
+back to the scalar implementations.
+
+### 1.3 Key-Dependent S-Box
 
 The dynamic S-Box starts from the AES S-Box and is shuffled with a
 Fisher–Yates permutation seeded by `SHA256(enc_key)`. The resulting table
 is verified to be a bijection (every byte appears exactly once), and an
 inverse table is built for decryption.
 
-### 1.3 Key Schedule
+### 1.4 Key Schedule
 
 The 256-bit encryption key is expanded into `(NR + 1) × 4` 32-bit round
 keys using an AES-256-style schedule:
@@ -65,7 +79,7 @@ keys using an AES-256-style schedule:
 RotWord -> SubWord (via dynamic S-Box) -> XOR with Rcon
 ```
 
-### 1.4 Key Derivation and File Format
+### 1.5 Key Derivation and File Format
 
 ```
 File format:
@@ -81,7 +95,7 @@ into:
 The HMAC is computed over the original plaintext and appended before CTR
 encryption. On decryption the HMAC is recomputed and compared.
 
-### 1.5 Decoy Mode (Experimental)
+### 1.6 Decoy Mode (Experimental)
 
 By default, a wrong password causes `choidec` to report an authentication
 failure and write no output. With `--decoy`, `choidec` writes a
@@ -119,7 +133,7 @@ Analysis).
 ### 3.1 Build
 
 ```bash
-make all        # choienc, choidec, choi_poc
+make all        # choienc, choidec, choi_poc  (enables -mssse3 on x86-64)
 make test       # build and run unit tests
 make clean      # remove all binaries and artifacts
 ```

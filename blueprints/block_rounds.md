@@ -86,6 +86,21 @@ InvMixColumns uses the inverse matrix:
 | 0b 0d 09 0e |
 ```
 
+## Implementation Notes
+
+On x86-64 builds compiled with `-mssse3`, the linear layers are accelerated
+with SSSE3 intrinsics:
+
+* `AddRoundKey` — single 128-bit XOR.
+* `ShiftRows` / `InvShiftRows` — byte shuffle with `_mm_shuffle_epi8`.
+* `MixColumns` / `InvMixColumns` — four columns processed in parallel using
+  byte-wise GF(2⁸) `xtime` and column rotations.
+
+The non-linear layers (`SubBytes` and `HexagonalLayer`) keep their
+key-dependent 256-entry table lookups and remain scalar.  On non-SSSE3
+targets the same algorithm falls back to the scalar reference
+implementations.
+
 ## Avalanche
 
 Single-bit changes in plaintext or key should affect roughly half of the
