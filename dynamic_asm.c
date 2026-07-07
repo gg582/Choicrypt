@@ -1,6 +1,8 @@
 #include "dynamic_asm.h"
 #include <stdio.h>
 
+/* Internal helpers are not declared in the header. */
+
 /* Modular inverse in GF(2^8) with irreducible polynomial 0x11B (AES) */
 static uint8_t gf_mul(uint8_t a, uint8_t b) {
     uint8_t res = 0;
@@ -126,13 +128,13 @@ void reverse_dynamic_round(uint8_t state[STATE_SIZE], const uint8_t round_key[ST
     }
 }
 
-void dynamic_asm_encrypt(uint8_t state[STATE_SIZE], const uint8_t round_keys[NUM_ROUNDS][STATE_SIZE]) {
+void dynamic_asm_encrypt(uint8_t state[STATE_SIZE], uint8_t round_keys[NUM_ROUNDS][STATE_SIZE]) {
     for (int r = 0; r < NUM_ROUNDS; r++) {
         apply_dynamic_round(state, round_keys[r]);
     }
 }
 
-void dynamic_asm_decrypt(uint8_t state[STATE_SIZE], const uint8_t round_keys[NUM_ROUNDS][STATE_SIZE]) {
+void dynamic_asm_decrypt(uint8_t state[STATE_SIZE], uint8_t round_keys[NUM_ROUNDS][STATE_SIZE]) {
     for (int r = NUM_ROUNDS - 1; r >= 0; r--) {
         reverse_dynamic_round(state, round_keys[r]);
     }

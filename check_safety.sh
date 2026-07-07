@@ -1,51 +1,94 @@
 #!/bin/bash
 
-# Choi Seok-jeong's Cipher Security Audit Script
-# Generates sample data, encrypts, and runs audit.
+# check_safety.sh — Integrated safety and correctness verification for Choicrypt
+#
+# This script builds all binaries, runs unit tests, verifies encryption /
+# decryption round-trips, checks failure behaviour with wrong passwords,
+# and runs the statistical audit tool.
 
-echo "[*] Cleaning up old artifacts..."
-make clean > /dev/null
-rm -f sample.bin sample.bin.choi sample.bin.dec sample.bin.stdout.dec sample.key audit_report.txt
+set -euo pipefail
 
-echo "[*] Compiling binaries..."
-make all > /dev/null
+PW="choi_seok_jeong_1700_jisugwimundo_chaos_32_rounds"
+SAMPLE=sample.bin
+ENCRYPTED=sample.bin.choi
+DECRYPTED=sample.bin.dec
+STDOUT_DEC=sample.bin.stdout.dec
+KEYFILE=sample.key
+REPORT=audit_report.txt
 
-if [ ! -f choienc ] || [ ! -f choidec ]; then
-    echo "[!] Compilation failed."
+ cleanup() {
+    rm -f "$SAMPLE" "$ENCRYPTED" "$DECRYPTED" "$STDOUT_DEC" "$KEYFILE" "$REPORT"
+}
+cleanup
+
+echo "[*] Building project..."
+make clean >/dev/null
+make all >/dev/null
+make test >/dev/null
+
+echo "[*] Generating 64 KiB random sample..."
+dd if=/dev/urandom of="$SAMPLE" bs=1K count=64 status=none
+
+echo "[*] Storing test password..."
+printf '%s' "$PW" > "$KEYFILE"
+
+echo "[*] Encrypting..."
+printf '%s\n' "$PW" | ./choienc "$SAMPLE"
+
+echo "[*] Decrypting..."
+printf '%s\n' "$PW" | ./choidec "$ENCRYPTED" "$DECRYPTED"
+
+echo "[*] Decrypting via inferred .choi path to stdout..."
+printf '%s\n' "$PW" | ./choidec "$SAMPLE" /dev/stdout > "$STDOUT_DEC"
+
+echo "[*] Verifying integrity..."
+if diff -q "$SAMPLE" "$DECRYPTED" >/dev/null; then
+    echo "[+] File integrity check: PASSED"
+else
+    echo "[!] File integrity check: FAILED"
     exit 1
 fi
 
-echo "[*] Generating 64KB sample data..."
-dd if=/dev/urandom of=sample.bin bs=1k count=64 2>/dev/null
-
-echo "[*] Creating key file (password: 'choi_seok_jeong_1700')..."
-PW="choi_seok_jeong_1700_jisugwimundo_chaos_32_rounds"
-echo -n "$PW" > sample.key
-
-echo "[*] Encrypting data..."
-echo "$PW" | ./choienc sample.bin
-
-echo "[*] Decrypting data..."
-echo "$PW" | ./choidec sample.bin.choi sample.bin.dec
-
-echo "[*] Decrypting via inferred .choi path to stdout..."
-echo "$PW" | ./choidec sample.bin /dev/stdout > sample.bin.stdout.dec
-
-echo "[*] Verifying integrity..."
-if diff sample.bin sample.bin.dec > /dev/null; then
-    echo "[+] Integrity Check: PASSED"
+if diff -q "$SAMPLE" "$STDOUT_DEC" >/dev/null; then
+    echo "[+] Stdout integrity check: PASSED"
 else
-    echo "[!] Integrity Check: FAILED"
-    # exit 1 # Don't exit yet, still want to see audit if it partially worked
+    echo "[!] Stdout integrity check: FAILED"
+    exit 1
 fi
 
-if diff sample.bin sample.bin.stdout.dec > /dev/null; then
-    echo "[+] Stdout Integrity Check: PASSED"
+echo "[*] Verifying wrong-password handling..."
+if printf '%s\n' "wrong_password" | ./choidec "$ENCRYPTED" /tmp/should_not_exist 2>/dev/null; then
+    echo "[!] Wrong password was accepted: FAILED"
+    exit 1
 else
-    echo "[!] Stdout Integrity Check: FAILED"
+    echo "[+] Wrong password correctly rejected"
 fi
 
-echo "[*] Running Security Audit (NIST + Autocorrelation + Independence)..."
-python3 crypt_hardcore_audit.py --origin sample.bin --encrypted sample.bin.choi --key sample.key | tee audit_report.txt
+if [ -f /tmp/should_not_exist ]; then
+    echo "[!] Output file created despite wrong password: FAILED"
+    exit 1
+fi
 
-echo "[*] Audit complete."
+echo "[*] Verifying decoy mode..."
+printf '%s\n' "wrong_password" | ./choidec --decoy "$ENCRYPTED" /tmp/decoy_out >/dev/null 2>&1
+if [ -f /tmp/decoy_out ] && [ "$(stat -c%s /tmp/decoy_out)" -eq "$(stat -c%s "$SAMPLE")" ]; then
+    echo "[+] Decoy mode produces output of correct size"
+else
+    echo "[!] Decoy mode did not produce expected output"
+    exit 1
+fi
+
+echo "[*] Running PoC..."
+./choi_poc >/dev/null
+
+echo "[*] Running statistical audit..."
+python3 crypt_hardcore_audit.py \
+    --origin "$SAMPLE" \
+    --encrypted "$ENCRYPTED" \
+    --key "$KEYFILE" | tee "$REPORT"
+
+echo "[*] Cleaning up temporary files..."
+cleanup
+rm -f /tmp/decoy_out /tmp/should_not_exist
+
+echo "[*] All safety checks passed."
