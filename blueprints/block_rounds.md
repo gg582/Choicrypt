@@ -18,10 +18,11 @@ The 16-byte block is viewed as a 4x4 matrix of bytes in row-major order:
 ## Round Function (rounds 1..13)
 
 ```
-SubBytes(state)        -- dynamic S-Box
-ShiftRows(state)       -- cyclic row shifts
-MixColumns(state)      -- GF(2^8) matrix multiplication
-AddRoundKey(state, r)  -- XOR with round key
+SubBytes(state)         -- dynamic S-Box
+ShiftRows(state)        -- cyclic row shifts
+MixColumns(state)       -- GF(2^8) matrix multiplication
+HexagonalLayer(state,r) -- key-dependent antipodal S-Box shuffle
+AddRoundKey(state, r)   -- XOR with round key
 ```
 
 ## Final Round (round 14)
@@ -29,10 +30,12 @@ AddRoundKey(state, r)  -- XOR with round key
 ```
 SubBytes(state)
 ShiftRows(state)
+HexagonalLayer(state, 14)
 AddRoundKey(state, 14)
 ```
 
-`MixColumns` is omitted in the final round, exactly as in AES.
+`MixColumns` is omitted in the final round, exactly as in AES, while the
+`HexagonalLayer` remains to preserve the key-dependent non-linear shuffle.
 
 ## Inversion
 
@@ -43,19 +46,22 @@ Each layer is individually invertible:
 | SubBytes | InvSubBytes (dynamic inverse S-Box) |
 | ShiftRows | InvShiftRows |
 | MixColumns | InvMixColumns |
+| HexagonalLayer | InvHexagonalLayer (antipodal inverse through dynamic S-Box) |
 | AddRoundKey | AddRoundKey (XOR is self-inverse) |
 
 Decryption applies the inverse layers in reverse order:
 
 ```
 AddRoundKey(state, 14)
-for r = 13 .. 1:
-    InvShiftRows(state)
-    InvSubBytes(state)
-    AddRoundKey(state, r)
-    InvMixColumns(state)
+InvHexagonalLayer(state, 14)
 InvShiftRows(state)
 InvSubBytes(state)
+for r = 13 .. 1:
+    AddRoundKey(state, r)
+    InvHexagonalLayer(state, r)
+    InvMixColumns(state)
+    InvShiftRows(state)
+    InvSubBytes(state)
 AddRoundKey(state, 0)
 ```
 

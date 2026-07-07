@@ -28,17 +28,26 @@ It is intended for learning, CTF challenges, and obfuscation research,
 
 ### 1.1 Round Function
 
-Each round applies four invertible layers:
+Each round applies five invertible layers:
 
 ```
-SubBytes      -> key-dependent dynamic S-Box (bijection)
-ShiftRows     -> byte rotation across the 4x4 state
-MixColumns    -> GF(2⁸) matrix multiplication (AES irreducible polynomial 0x11B)
-AddRoundKey   -> XOR with the round key
+SubBytes         -> key-dependent dynamic S-Box (bijection)
+ShiftRows        -> byte rotation across the 4x4 state
+MixColumns       -> GF(2⁸) matrix multiplication (AES irreducible polynomial 0x11B)
+HexagonalLayer   -> key-dependent antipodal S-Box shuffle on a 16-node ring
+AddRoundKey      -> XOR with the round key
 ```
 
-The final round omits `MixColumns`, matching AES convention and ensuring
-clean invertibility.
+The 16-byte state is viewed as 16 nodes on a hexagonal ring; node `i` is
+paired with its antipode `(i + 8) % 16`.  `HexagonalLayer` reads from the
+antipode, XORs with the round key, and passes the result through the dynamic
+S-Box.  This operation is fully invertible (the inverse reads back through
+the antipode and applies `InvS-Box`), and provides an additional non-linear
+diffusion step inspired by the geometry of the hexagonal lattice.
+
+The final round omits `MixColumns`, matching AES convention, but keeps the
+`HexagonalLayer` so the key-dependent antipodal shuffle is present in every
+round.
 
 ### 1.2 Key-Dependent S-Box
 
@@ -151,8 +160,10 @@ echo 'wrong_password' | ./choidec --decoy secret.txt.choi fake_output.txt
 
 * **Key-dependent confusion**: the S-Box changes with every password,
   complicating attacks that rely on a fixed substitution table.
-* **Diffusion**: `ShiftRows` plus `MixColumns` propagates single-byte
-  changes across the entire 128-bit block.
+* **Diffusion**: `ShiftRows`, `MixColumns`, and the `HexagonalLayer`
+  propagate single-byte changes across the entire 128-bit block.  The
+  antipodal shuffle adds a non-linear geometric mixing step on top of the
+  standard SP-network diffusion.
 * **Brute-force resistance**: PBKDF2-HMAC-SHA256 with 100,000 iterations
   slows password guessing.
 * **Per-file uniqueness**: random salt and nonce ensure that encrypting

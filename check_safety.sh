@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-PW="choi_seok_jeong_1700_jisugwimundo_chaos_32_rounds"
+PW="choi_seok_jeong_1700_hexagonal_chaos_32_rounds"
 SAMPLE=sample.bin
 ENCRYPTED=sample.bin.choi
 DECRYPTED=sample.bin.dec

@@ -359,6 +359,32 @@ static void choi_inv_mix_columns(uint8_t state[CHOI_BLOCK_SIZE]) {
     }
 }
 
+/* ------------------------------------------------------------------
+ * Hexagonal Layer
+ * ------------------------------------------------------------------
+ * The 16-byte state is viewed as 16 nodes arranged in a hexagonal
+ * ring.  Node i is paired with its antipode (i + 8) % 16.  The layer
+ * applies a key-dependent non-linear shuffle through the S-box while
+ * remaining fully invertible.
+ * ------------------------------------------------------------------ */
+static inline void choi_hexagonal_layer(uint8_t state[CHOI_BLOCK_SIZE], int round) {
+    const uint8_t *rk = (const uint8_t *)&CHOI_ROUND_KEYS[round * 4];
+    uint8_t tmp[CHOI_BLOCK_SIZE];
+    for (int i = 0; i < CHOI_BLOCK_SIZE; ++i) {
+        tmp[i] = CHOI_SBOX[state[(i + 8) % CHOI_BLOCK_SIZE] ^ rk[i]];
+    }
+    memcpy(state, tmp, CHOI_BLOCK_SIZE);
+}
+
+static inline void choi_inv_hexagonal_layer(uint8_t state[CHOI_BLOCK_SIZE], int round) {
+    const uint8_t *rk = (const uint8_t *)&CHOI_ROUND_KEYS[round * 4];
+    uint8_t tmp[CHOI_BLOCK_SIZE];
+    for (int i = 0; i < CHOI_BLOCK_SIZE; ++i) {
+        tmp[(i + 8) % CHOI_BLOCK_SIZE] = CHOI_INV_SBOX[state[i]] ^ rk[i];
+    }
+    memcpy(state, tmp, CHOI_BLOCK_SIZE);
+}
+
 static inline void choi_add_round_key(uint8_t state[CHOI_BLOCK_SIZE], int round) {
     const uint8_t *rk = (const uint8_t *)&CHOI_ROUND_KEYS[round * 4];
     for (int i = 0; i < CHOI_BLOCK_SIZE; ++i) state[i] ^= rk[i];
@@ -416,10 +442,12 @@ static void choi_encrypt_block(const uint8_t in[CHOI_BLOCK_SIZE],
         choi_sub_bytes(state);
         choi_shift_rows(state);
         choi_mix_columns(state);
+        choi_hexagonal_layer(state, round);
         choi_add_round_key(state, round);
     }
     choi_sub_bytes(state);
     choi_shift_rows(state);
+    choi_hexagonal_layer(state, CHOI_NR);
     choi_add_round_key(state, CHOI_NR);
 
     memcpy(out, state, CHOI_BLOCK_SIZE);
@@ -431,14 +459,16 @@ static void choi_decrypt_block(const uint8_t in[CHOI_BLOCK_SIZE],
     memcpy(state, in, CHOI_BLOCK_SIZE);
 
     choi_add_round_key(state, CHOI_NR);
-    for (int round = CHOI_NR - 1; round >= 1; --round) {
-        choi_inv_shift_rows(state);
-        choi_inv_sub_bytes(state);
-        choi_add_round_key(state, round);
-        choi_inv_mix_columns(state);
-    }
+    choi_inv_hexagonal_layer(state, CHOI_NR);
     choi_inv_shift_rows(state);
     choi_inv_sub_bytes(state);
+    for (int round = CHOI_NR - 1; round >= 1; --round) {
+        choi_add_round_key(state, round);
+        choi_inv_hexagonal_layer(state, round);
+        choi_inv_mix_columns(state);
+        choi_inv_shift_rows(state);
+        choi_inv_sub_bytes(state);
+    }
     choi_add_round_key(state, 0);
 
     memcpy(out, state, CHOI_BLOCK_SIZE);
